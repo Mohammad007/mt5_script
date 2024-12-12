@@ -157,7 +157,7 @@ class FibSniperBot(SniperBot):
             return False
 
         # Get recent price data for Fibonacci calculations
-        rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, 100)
+        rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M15, 0, 100)
         if rates is None:
             logging.error(f"Failed to get historical data for {symbol}")
             return False
@@ -213,7 +213,7 @@ class FibSniperBot(SniperBot):
 if __name__ == "__main__":
     # Your account details
     SYMBOLS = ["EURUSD", "GBPUSD", "USDJPY", "USDCHF", "USDCAD", "EURGBP", "EURJPY", "GBPJPY", "AUDUSD", "NZDUSD", "AUDCHF", "AUDNZD", "EURAUD", "EURCAD", "EURCHF", "EURNZD", "GBPAUD", "GBPCAD", "GBPCHF", "GBPNZD", "NZDCAD", "NZDCHF", "NZDJPY"]
-    ACCOUNT = 79504013  # Replace with your account number
+    ACCOUNT = 79431322  # Replace with your account number
     PASSWORD = "Bilal@8477"
     SERVER = "Exness-MT5Trial8"
     
@@ -227,7 +227,7 @@ if __name__ == "__main__":
             while True:
                 # Place trades using Fibonacci levels
                 for symbol in SYMBOLS:
-                    volume = 0.20  # Adjust based on your risk management
+                    volume = 1.0  # Adjust based on your risk management
                     bot.place_fib_trade(symbol, mt5.ORDER_TYPE_BUY, volume)
                     bot.place_fib_trade(symbol, mt5.ORDER_TYPE_SELL, volume)
                 

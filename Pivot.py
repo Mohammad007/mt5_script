@@ -6,6 +6,7 @@ import numpy as np
 import pandas_ta as ta
 from tabulate import tabulate
 import time
+from datetime import datetime, timedelta
 
 # Initialize colorama and logging
 init()
@@ -62,7 +63,7 @@ class SniperBot:
             current_price = mt5.symbol_info_tick(position.symbol).bid if position.type == mt5.ORDER_TYPE_BUY else mt5.symbol_info_tick(position.symbol).ask
             profit = position.profit
             
-            if profit >= 10:  # $10 profit threshold
+            if profit >= 3:  # $3 profit threshold
                 close_request = {
                     "action": mt5.TRADE_ACTION_DEAL,
                     "symbol": position.symbol,
@@ -83,7 +84,7 @@ class SniperBot:
                     logging.info(f"{Fore.GREEN}Closed profitable trade for {position.symbol} with ${profit:.2f} profit{Style.RESET_ALL}")
                     # Reopen the position with the same parameters
                     time.sleep(1)  # Small delay before reopening
-                    self.place_fib_trade(position.symbol, position.type, position.volume)
+                    self.place_trade(position.symbol, position.volume)
 
     def check_and_close_stoploss_trades(self):
         """Check for profitable trades and close them if profit >= $10, then reopen"""
@@ -117,79 +118,111 @@ class SniperBot:
                     logging.info(f"{Fore.RED}Closed stoploss trade for {position.symbol} with ${profit:.2f} loss{Style.RESET_ALL}")
                     # Reopen the position with the same parameters
                     time.sleep(1)  # Small delay before reopening
-                    self.place_fib_trade(position.symbol, position.type, position.volume)
+                    self.place_trade(position.symbol, position.volume)
 
     def shutdown(self):
         """Cleanup and shutdown"""
         mt5.shutdown()
 
-class FibSniperBot(SniperBot):
+class SniperBot(SniperBot):
     def __init__(self, symbols, account_number, password, server):
         super().__init__(symbols, account_number, password, server)
+
+    def calculate_pivot_points(self, df):
+        """Calculate classic pivot points"""
+        df['PP'] = (df['high'].shift(1) + df['low'].shift(1) + df['close'].shift(1)) / 3
+        df['R1'] = 2 * df['PP'] - df['low'].shift(1)
+        df['S1'] = 2 * df['PP'] - df['high'].shift(1)
+        df['R2'] = df['PP'] + (df['high'].shift(1) - df['low'].shift(1))
+        df['S2'] = df['PP'] - (df['high'].shift(1) - df['low'].shift(1))
+        return df
+
+    def determine_trend(self, df):
+        """Determine trend using multiple indicators"""
+        # Calculate EMAs
+        df['EMA20'] = ta.ema(df['close'], length=20)
+        df['EMA50'] = ta.ema(df['close'], length=50)
         
-    def calculate_fib_levels(self, high, low):
-        """Calculate Fibonacci retracement levels"""
-        diff = high - low
-        levels = {
-            '1.000': low + (diff * 1.000),  # 100% (Full retracement)
-            '0.786': low + (diff * 0.786),  # 78.6% retracement
-            '0.618': low + (diff * 0.618),  # 61.8% retracement
-            '0.500': low + (diff * 0.500),  # 50% retracement
-            '0.382': low + (diff * 0.382),  # 38.2% retracement
-            '0.236': low + (diff * 0.236),  # 23.6% retracement
-            '0.000': low + (diff * 0.000),  # 0% (No retracement)
-            '-0.272': low + (diff * -0.272), # -27.2% extension
-            '-0.618': low + (diff * -0.618), # -61.8% extension
-            '-1.000': low + (diff * -1.000)  # -100% extension
-        }
-        return levels
+        # Calculate RSI
+        df['RSI'] = ta.rsi(df['close'], length=14)
+        
+        # Get current values
+        current_price = df['close'].iloc[-1]
+        current_ema20 = df['EMA20'].iloc[-1]
+        current_ema50 = df['EMA50'].iloc[-1]
+        current_rsi = df['RSI'].iloc[-1]
+        
+        # Determine trend based on multiple conditions
+        trend = 'neutral'
+        
+        if (current_price > current_ema20 > current_ema50) and (current_rsi > 50):
+            trend = 'bullish'
+        elif (current_price < current_ema20 < current_ema50) and (current_rsi < 50):
+            trend = 'bearish'
+            
+        return trend
 
-    def place_fib_trade(self, symbol, order_type, volume=0.1):
-        """Place a trade using Fibonacci levels for entry, SL, and TP"""
+    def find_entry_points(self, df):
+        """Find entry points based on pivot points and price action"""
+        df = self.calculate_pivot_points(df)
+        trend = self.determine_trend(df)
+        
+        current_price = df['close'].iloc[-1]
+        pp = df['PP'].iloc[-1]
+        r1 = df['R1'].iloc[-1]
+        s1 = df['S1'].iloc[-1]
+        
+        signal = 'none'
+        entry = 0
+        sl = 0
+        tp = 0
+        
+        if trend == 'bullish':
+            # Buy near S1 in bullish trend
+            if current_price > s1 and current_price < pp:
+                signal = 'buy'
+                entry = current_price
+                sl = s1 - 0.00100  # 100 pips below S1
+                tp = r1  # Target R1
+                
+        elif trend == 'bearish':
+            # Sell near R1 in bearish trend
+            if current_price < r1 and current_price > pp:
+                signal = 'sell'
+                entry = current_price
+                sl = r1 + 0.00100  # 100 pips above R1
+                tp = s1  # Target S1
+                
+        return signal, entry, sl, tp
+
+    def place_trade(self, symbol, volume=0.1):
+        """Place trades based on pivot points and trend analysis"""            
         if self.has_open_position(symbol):
-            logging.info(f"Skipping {symbol} - Position already exists")
             return False
-
-        # Get current market data
-        symbol_data = mt5.symbol_info_tick(symbol)
-        if symbol_data is None:
-            logging.error(f"Failed to get market data for {symbol}")
-            return False
-
-        # Get recent price data for Fibonacci calculations
-        rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, 100)
+            
+        # Get market data
+        rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M15, 0, 100)
         if rates is None:
-            logging.error(f"Failed to get historical data for {symbol}")
             return False
             
         df = pd.DataFrame(rates)
-        high = df['high'].max()
-        low = df['low'].min()
+        signal, entry, sl, tp = self.find_entry_points(df)
         
-        # Calculate Fibonacci levels
-        fib_levels = self.calculate_fib_levels(high, low)
+        if signal == 'none':
+            return False
+            
+        order_type = mt5.ORDER_TYPE_BUY if signal == 'buy' else mt5.ORDER_TYPE_SELL
         
-        if order_type == mt5.ORDER_TYPE_BUY:
-            price = symbol_data.ask
-            entry = fib_levels['0.618']  # Entry at 61.8%
-            sl = fib_levels['1.000']     # SL at 100%
-            tp = fib_levels['-1.000']    # TP at -100% extension
-        else:
-            price = symbol_data.bid
-            entry = fib_levels['0.618']  # Entry at 61.8%
-            sl = fib_levels['1.000']     # SL at 100%
-            tp = fib_levels['-1.000']    # TP at -100% extension
-
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
             "symbol": symbol,
             "volume": volume,
             "type": order_type,
-            "price": price,
-            "sl": sl,
+            "price": entry,
+            # "sl": sl,
             "tp": tp,
             "magic": 234000,
-            "comment": "FibSniperBot Trade",
+            "comment": "Pivot Trade",
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": mt5.ORDER_FILLING_IOC,
         }
@@ -198,41 +231,34 @@ class FibSniperBot(SniperBot):
         if result.retcode != mt5.TRADE_RETCODE_DONE:
             logging.error(f"Order failed: {result.comment}")
             return False
-        
-        self.open_positions[result.order] = {
-            "symbol": symbol,
-            "entry_price": price,
-            "sl": sl,
-            "tp": tp
-        }
-        
-        logging.info(f"Order placed successfully: {symbol} Entry: {price:.5f} SL: {sl:.5f} TP: {tp:.5f}")
+            
+        logging.info(f"{Fore.BLUE}New {signal} position opened for {symbol} at {entry:.5f}{Style.RESET_ALL}")
         return True
 
 # Usage example
 if __name__ == "__main__":
     # Your account details
     SYMBOLS = ["EURUSD", "GBPUSD", "USDJPY", "USDCHF", "USDCAD", "EURGBP", "EURJPY", "GBPJPY", "AUDUSD", "NZDUSD", "AUDCHF", "AUDNZD", "EURAUD", "EURCAD", "EURCHF", "EURNZD", "GBPAUD", "GBPCAD", "GBPCHF", "GBPNZD", "NZDCAD", "NZDCHF", "NZDJPY"]
-    ACCOUNT = 79504013  # Replace with your account number
+    ACCOUNT = 79431322  # Replace with your account number
     PASSWORD = "Bilal@8477"
     SERVER = "Exness-MT5Trial8"
     
     # Create and run bot
-    bot = FibSniperBot(SYMBOLS, ACCOUNT, PASSWORD, SERVER)
+    bot = SniperBot(SYMBOLS, ACCOUNT, PASSWORD, SERVER)
     
     try:
         if bot.initialize():
             print(f"{Fore.GREEN}Account initialized successfully{Style.RESET_ALL}")
             
             while True:
-                # Place trades using Fibonacci levels
                 for symbol in SYMBOLS:
-                    volume = 0.20  # Adjust based on your risk management
-                    bot.place_fib_trade(symbol, mt5.ORDER_TYPE_BUY, volume)
-                    bot.place_fib_trade(symbol, mt5.ORDER_TYPE_SELL, volume)
+                    volume = 0.1  # Adjust based on risk management
+                    bot.place_trade(symbol, volume)
                 
-                # Wait 2 seconds before next trade search
-                time.sleep(2)
+                bot.check_and_close_profitable_trades()
+                # bot.check_and_close_stoploss_trades()
+                
+                time.sleep(1)  # Check every 1 seconds
                 
     except KeyboardInterrupt:
         print(f"{Fore.YELLOW}Bot stopping...{Style.RESET_ALL}")
